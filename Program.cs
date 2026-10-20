@@ -29,6 +29,41 @@ static class Program
 
     static int Main(string[] args)
     {
+        bool pause = !args.Contains("--no-pause", StringComparer.OrdinalIgnoreCase);
+
+        // also catches crashes on background threads, which try/catch below can't
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            Console.WriteLine("\nERROR: " + e.ExceptionObject);
+            if (pause) WaitForExit();
+            Environment.Exit(1);
+        };
+
+        int code;
+        try { code = Run(args); }
+        catch (Exception ex)
+        {
+            Console.WriteLine("\nERROR: " + ex);
+            code = 1;
+        }
+
+        if (pause) WaitForExit();
+        return code;
+    }
+
+    static void WaitForExit()
+    {
+        Console.WriteLine("\nPress Enter to close this window...");
+        try
+        {
+            while (Console.KeyAvailable) Console.ReadKey(true); // drop keys pressed during the run
+            Console.ReadLine();
+        }
+        catch { Thread.Sleep(Timeout.Infinite); }
+    }
+
+    static int Run(string[] args)
+    {
         bool Has(string a) => args.Contains(a, StringComparer.OrdinalIgnoreCase);
         DryRun = Has("--dry-run");
         bool allowCore0 = Has("--allow-core0");
@@ -77,8 +112,13 @@ static class Program
 
         // ---- Pick one representative logical CPU per physical core (the quieter sibling) ----
         var groups = Enumerable.Range(0, logical).GroupBy(c => c / perCore).ToList();
+        // Default: use the FIRST thread of each physical core (0,2,4,...) and leave the SMT sibling alone.
+        // --allow-smt-threads lets it pick whichever sibling benchmarked quieter instead.
+        bool allowSmt = Has("--allow-smt-threads");
         var reps = groups
-            .Select(g => g.Select(c => scores[c]).OrderBy(s => s.Score).First())
+            .Select(g => allowSmt
+                ? g.Select(c => scores[c]).OrderBy(s => s.Score).First()
+                : scores[g.First()])
             .OrderBy(s => s.Score).ToList();
 
         // Core 0 handles a lot of system interrupts/DPCs; keep it free when we have enough cores
@@ -90,8 +130,13 @@ static class Program
         // ---- Assign + apply ----
         var plan = new List<(Dev dev, int cpu)>();
         int idx = 0;
-        foreach (var d in devices.OrderBy(d => d.Kind).ThenBy(d => d.Name))
-            plan.Add((d, reps[idx++ % reps.Count].Cpu));
+        // one core per device TYPE (GPU, USB, Audio, Storage, Network); devices of the same type share it
+        foreach (var grp in devices.GroupBy(d => d.Kind).OrderBy(g => g.Key))
+        {
+            int cpu = reps[idx++ % reps.Count].Cpu;
+            foreach (var d in grp.OrderBy(d => d.Name))
+                plan.Add((d, cpu));
+        }
 
         Console.WriteLine();
         foreach (var (dev, cpu) in plan)
