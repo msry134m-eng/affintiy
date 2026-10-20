@@ -1,0 +1,28 @@
+name: Build affinity.exe
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Publish single-file exe
+        run: >
+          dotnet publish AutoAffinity.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: affinity-exe
+          path: out/affinity.exe
